@@ -1,7 +1,3 @@
-import { join, normalize, sep as slash } from 'path';
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const xdg = require('@folder/xdg');
 
 export interface GlobalSettings {
 	profilesList: ProfileOptions[];
@@ -40,7 +36,7 @@ export interface VaultSettings {
 	}
 }
 
-export const DEFAULT_PROFILE_PATH = normalize(join(xdg({ subdir: 'ObsidianPlugins' }).data, 'Profiles'));
+export const DEFAULT_PROFILE_PATH = '.obsidian/plugins/settings-profiles-v2/profiles';
 
 export const DEFAULT_VAULT_SETTINGS: VaultSettings = {
 	activeProfile: {},
@@ -119,7 +115,7 @@ export const PROFILE_OPTIONS_MAP: ProfileOptionsMap = {
 	appearance: {
 		name: 'Appearance',
 		description: 'Says whether the obsidian appearance settings will sync.',
-		file: ['appearance.json', `snippets${slash}*`, `themes${slash}*${slash}*`],
+		file: ['appearance.json', `snippets/*`, `themes/*/*`],
 	},
 	app: {
 		name: 'App',
@@ -134,8 +130,8 @@ export const PROFILE_OPTIONS_MAP: ProfileOptionsMap = {
 	communityPlugins: {
 		name: 'Community plugins',
 		description: 'Says whether the community plugins and there settings will sync.',
-		file: ['community-plugins.json', `plugins${slash}*${slash}*`],
-		ignore: `plugins${slash}settings-profiles${slash}data.json`,
+		file: ['community-plugins.json', `plugins/*/*`],
+		ignore: ['plugins/settings-profiles-v2', 'plugins/settings-profiles'],
 	},
 
 	/*

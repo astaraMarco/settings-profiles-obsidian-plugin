@@ -1,185 +1,238 @@
-import { copyFileSync, createReadStream, existsSync, mkdirSync, readdirSync, rmSync, rmdirSync, statSync, unlinkSync } from 'fs';
-import { FileSystemAdapter } from 'obsidian';
-import { basename, dirname, join, normalize, sep as slash } from 'path';
-import { PassThrough, Readable } from 'stream';
+import { DataAdapter, normalizePath } from 'obsidian';
+
+/**
+ * Normalizza il path gestendo correttamente gli array di path
+ */
+function toPath(pathArray: string[]): string {
+	return normalizePath(pathArray.join('/'));
+}
+
+/**
+ * Restituisce l'ultimo segmento del path (nome file)
+ */
+function getBasename(path: string): string {
+    const parts = normalizePath(path).split('/');
+    return parts[parts.length - 1];
+}
 
 /**
  * Returns all files in this directory. Could be used with placeholder /*\/ for all paths or /* for all files that match the pattern.
+ * @param adapter DataAdapter to use for file system operations
  * @param path Path to check for files
- * @returns an array of file names
+ * @returns a promise resolving to an array of file names
  */
-export function getAllFiles(path: string[]): string[] {
+export async function getAllFiles(adapter: DataAdapter, path: string[]): Promise<string[]> {
 	let pathSections: string[] = [];
 	let files: string[] = [];
 
+	const fullPath = path.join('/');
+
 	// Check path contains path placeholder
-	if (join(...path).includes(`${slash}*${slash}`)) {
-		pathSections = join(...path).split(`${slash}*${slash}`);
+	if (fullPath.includes(`/*/`)) {
+		pathSections = fullPath.split(`/*/`);
 
 		if (pathSections.length > 0) {
-			if (!existsSync(pathSections[0])) {
-				console.warn(`The path section does not exist! PathSections: ${pathSections[0]}`);
+            const basePath = normalizePath(pathSections[0] || '/');
+			if (!(await adapter.exists(basePath))) {
+				console.warn(`The path section does not exist! PathSections: ${basePath}`);
 				return files;
 			}
-			if (!statSync(pathSections[0]).isDirectory()) {
-				console.warn(`The path section is a file and is not inserted, does not match the pattern (/*/)! PathSections: ${pathSections[0]}`);
+            
+            const stat = await adapter.stat(basePath);
+			if (stat?.type !== 'folder') {
+				console.warn(`The path section is a file and is not inserted, does not match the pattern (/*/)! PathSections: ${basePath}`);
 				return files;
 			}
 
 			// Get existing paths for placeholders
-			const pathContent = readdirSync(pathSections[0]);
+			const pathContent = await adapter.list(basePath);
 
 			// Add all combined files
-			pathContent.forEach(value => {
-				const joinedPath = join(pathSections[0], value, ...pathSections.filter((value, index) => index > 0));
-				files = files.concat(getAllFiles([joinedPath]));
-			});
+            for (const folder of pathContent.folders) {
+                const joinedPath = [folder, ...pathSections.slice(1)].join('/');
+                const subFiles = await getAllFiles(adapter, [joinedPath]);
+                files = files.concat(subFiles);
+            }
 		}
 	}
-
 	// Check path contains file placeholder
-	else if (join(...path).endsWith(`${slash}*`)) {
-		pathSections = join(...path).split(`${slash}*`);
+	else if (fullPath.endsWith(`/*`)) {
+		pathSections = fullPath.split(`/*`);
 
 		if (pathSections.length > 0) {
-			if (!existsSync(pathSections[0])) {
-				console.warn(`The path section does not exist! PathSections: ${pathSections[0]}`);
+            const basePath = normalizePath(pathSections[0] || '/');
+			if (!(await adapter.exists(basePath))) {
+				console.warn(`The path section does not exist! PathSections: ${basePath}`);
 				return files;
 			}
-			if (!statSync(pathSections[0]).isDirectory()) {
-				console.warn(`The path section is a file and is not inserted, does not match the pattern (/*)! PathSections: ${pathSections[0]}`);
+            const stat = await adapter.stat(basePath);
+			if (stat?.type !== 'folder') {
+				console.warn(`The path section is a file and is not inserted, does not match the pattern (/*)! PathSections: ${basePath}`);
 				return files;
 			}
-			const pathContent = readdirSync(pathSections[0]).map(value => join(pathSections[0], value));
-			files = files.concat(...pathContent.filter((value) => {
-				return statSync(value).isFile() && !FILE_IGNORE_LIST.contains(basename(value));
-			}));
+			const pathContent = await adapter.list(basePath);
+            for (const file of pathContent.files) {
+                if (!FILE_IGNORE_LIST.includes(getBasename(file))) {
+                    files.push(file);
+                }
+            }
 		}
 	}
-
 	// Path is file
-	else if (existsSync(join(...path)) && statSync(join(...path)).isFile()) {
-		if (!FILE_IGNORE_LIST.contains(basename(join(...path)))) {
-			files.push(...path);
-		}
+	else {
+        const p = normalizePath(fullPath);
+        if (await adapter.exists(p)) {
+            const stat = await adapter.stat(p);
+            if (stat?.type === 'file' && !FILE_IGNORE_LIST.includes(getBasename(p))) {
+                files.push(p);
+            }
+        }
 	}
 	return files;
 }
 
 /**
  * Returns all subpaths in this directory. Could be used with placeholder /*\/ for all paths that match the pattern.
+ * @param adapter DataAdapter to use for file system operations
  * @param path Path to check for subpaths
- * @returns an array of path names
+ * @returns a promise resolving to an array of path names
  */
-export function getAllSubPaths(path: string[]): string[] {
+export async function getAllSubPaths(adapter: DataAdapter, path: string[]): Promise<string[]> {
 	let pathSections: string[] = [];
 	let paths: string[] = [];
 
+    const fullPath = path.join('/');
+
 	// Check path contains placeholder
-	if (join(...path).includes(`${slash}*${slash}`)) {
-		pathSections = join(...path).split(`${slash}*${slash}`);
+	if (fullPath.includes(`/*/`)) {
+		pathSections = fullPath.split(`/*/`);
 
 		if (pathSections.length > 0) {
-			if (!existsSync(pathSections[0])) {
-				console.warn(`The path section does not exist! PathSections: ${pathSections[0]}`);
+            const basePath = normalizePath(pathSections[0] || '/');
+			if (!(await adapter.exists(basePath))) {
+				console.warn(`The path section does not exist! PathSections: ${basePath}`);
 				return paths;
 			}
-			if (!statSync(pathSections[0]).isDirectory()) {
-				console.warn(`The path section is a file and is not inserted, does not match the pattern (/*/)! PathSections: ${pathSections[0]}`);
+            const stat = await adapter.stat(basePath);
+			if (stat?.type !== 'folder') {
+				console.warn(`The path section is a file and is not inserted, does not match the pattern (/*/)! PathSections: ${basePath}`);
 				return paths;
 			}
 
 			// Get existing paths for placeholder
-			const pathContent = readdirSync(pathSections[0]);
+			const pathContent = await adapter.list(basePath);
 
 			// Add all combined paths
-			pathContent.forEach(value => {
-				const joinedPath = join(pathSections[0], value, ...pathSections.filter((value, index) => index > 0));
-				paths = paths.concat(getAllSubPaths([joinedPath]));
-			});
+            for (const folder of pathContent.folders) {
+				const joinedPath = [folder, ...pathSections.slice(1)].join('/');
+				const subPaths = await getAllSubPaths(adapter, [joinedPath]);
+                paths = paths.concat(subPaths);
+            }
 		}
 	}
-
 	// Path doesn't exist
-	else if (!existsSync(join(...path))) {
+	else if (!(await adapter.exists(normalizePath(fullPath)))) {
 		return [];
 	}
-
 	// Get subpath in path
 	else {
-		const pathContent = readdirSync(join(...path)).map(value => join(...path, value));
-		paths = pathContent.filter((value) => {
-			return statSync(value).isDirectory();
-		});
+        const listed = await adapter.list(normalizePath(fullPath));
+        paths = listed.folders;
 	}
 	return paths;
 }
 
 /**
  * Compares to files and make them in both directories equal.
+ * @param adapter DataAdapter to use for file system operations
  * @param sourcePath The source file
  * @param targetPath The target file
  */
-export function keepNewestFile(sourcePath: string[], targetPath: string[]) {
-	const sourceFile = join(...sourcePath);
-	const targetFile = join(...targetPath);
+export async function keepNewestFile(adapter: DataAdapter, sourcePath: string[], targetPath: string[]) {
+	const sourceFile = toPath(sourcePath);
+	const targetFile = toPath(targetPath);
 
 	// Keep newest file
-	if (existsSync(sourceFile) && (!existsSync(targetFile) || statSync(sourceFile).mtime > statSync(targetFile).mtime)) {
-		// Check target path exist
-		ensurePathExist([dirname(targetFile)]);
-		copyFileSync(sourceFile, targetFile);
-	}
-	else if (existsSync(targetFile)) {
-		// Check target path exist
-		ensurePathExist([dirname(sourceFile)]);
-		copyFileSync(targetFile, sourceFile);
+	const sourceExist = await adapter.exists(sourceFile);
+	const targetExist = await adapter.exists(targetFile);
+
+	if (sourceExist) {
+		const sourceStat = await adapter.stat(sourceFile);
+		const targetStat = targetExist ? await adapter.stat(targetFile) : null;
+		
+		if (!targetExist || (sourceStat && targetStat && sourceStat.mtime > targetStat.mtime)) {
+			const targetDir = targetFile.substring(0, targetFile.lastIndexOf('/'));
+			if (targetDir) {
+				await ensurePathExist(adapter, [targetDir]);
+			}
+			const content = await adapter.readBinary(sourceFile);
+			await adapter.writeBinary(targetFile, content);
+		} else if (targetExist) {
+			const sourceDir = sourceFile.substring(0, sourceFile.lastIndexOf('/'));
+			if (sourceDir) {
+				await ensurePathExist(adapter, [sourceDir]);
+			}
+			const content = await adapter.readBinary(targetFile);
+			await adapter.writeBinary(sourceFile, content);
+		}
+	} else if (targetExist) {
+		const sourceDir = sourceFile.substring(0, sourceFile.lastIndexOf('/'));
+		if (sourceDir) {
+			await ensurePathExist(adapter, [sourceDir]);
+		}
+		const content = await adapter.readBinary(targetFile);
+		await adapter.writeBinary(sourceFile, content);
 	}
 }
 
 /**
  * Copies a file from a source path to a target path
+ * @param adapter DataAdapter to use for file system operations
  * @param sourcePath The source file
  * @param targetPath The target file
- * @returns Copy was successful
  */
-export function copyFile(sourcePath: string[], targetPath: string[]) {
-	const sourceFile = normalize(join(...sourcePath));
-	const targetFile = normalize(join(...targetPath));
+export async function copyFile(adapter: DataAdapter, sourcePath: string[], targetPath: string[]) {
+	const sourceFile = toPath(sourcePath);
+	const targetFile = toPath(targetPath);
 
 	// Check source exist
-	if (!isValidPath([sourceFile]) || !existsSync(sourceFile)) {
+	if (!(await adapter.exists(sourceFile))) {
 		throw Error(`Source file does not exist! SourceFile: ${sourceFile}`);
 	}
 
 	// Check target path exist
-	isValidPath([...targetPath]);
-	ensurePathExist([targetFile.slice(0, targetFile.lastIndexOf(slash))]);
+    const targetDir = targetFile.substring(0, targetFile.lastIndexOf('/'));
+    if (targetDir) {
+	    await ensurePathExist(adapter, [targetDir]);
+    }
 
 	// Check source is on ignore list
-	if (FILE_IGNORE_LIST.contains(basename(sourceFile))) {
+	if (FILE_IGNORE_LIST.includes(getBasename(sourceFile))) {
 		console.warn(`An attempt was made to copy a file that is on the ignore list. File: ${sourceFile}`);
 		return;
 	}
 
 	// Copy file
-	copyFileSync(sourceFile, targetFile);
+    const content = await adapter.readBinary(sourceFile);
+	await adapter.writeBinary(targetFile, content);
 }
 
 /**
  * Copy recursive Folder Structure
+ * @param adapter DataAdapter to use for file system operations
  * @param sourcePath The source path to copy the subfolders/files
  * @param targetPath The target path where to copy the subfolders/files to
  */
-export function copyFolderRecursiveSync(sourcePath: string[], targetPath: string[]) {
-	const source = join(...sourcePath);
-	const target = join(...targetPath);
+export async function copyFolderRecursiveSync(adapter: DataAdapter, sourcePath: string[], targetPath: string[]) {
+	const source = toPath(sourcePath);
+	const target = toPath(targetPath);
 
 	// Check source is a valid path and exist
-	if (!isValidPath([source]) || !existsSync(source)) {
+	if (!isValidPath([source]) || !(await adapter.exists(source))) {
 		throw Error(`Source path does not exist! Path: ${source}`);
 	}
-	if (!statSync(source).isDirectory()) {
+	const sourceStat = await adapter.stat(source);
+	if (sourceStat?.type !== 'folder') {
 		throw Error(`Source path is not a path! Path: ${source}`);
 	}
 
@@ -187,49 +240,49 @@ export function copyFolderRecursiveSync(sourcePath: string[], targetPath: string
 	if (!isValidPath([target])) {
 		throw Error(`Target path is not a valid path! Path: ${target}`);
 	}
-	ensurePathExist([target]);
-	if (!statSync(target).isDirectory()) {
+	await ensurePathExist(adapter, [target]);
+	const targetStat = await adapter.stat(target);
+	if (targetStat?.type !== 'folder') {
 		throw Error(`Target path is not a path! Path: ${source}`);
 	}
 
 	// Files in source
-	const files = readdirSync(source);
+	const list = await adapter.list(source);
 
-	files.forEach(file => {
-		const sourceFile = join(source, file);
-		const targetFile = join(target, file);
-
-		if (statSync(sourceFile).isDirectory()) {
-			// Copy files in subpath
-			copyFolderRecursiveSync([sourceFile], [targetFile]);
+	for (const folder of list.folders) {
+		const targetFile = target + '/' + getBasename(folder);
+		await copyFolderRecursiveSync(adapter, [folder], [targetFile]);
+	}
+	
+	for (const file of list.files) {
+		const targetFile = target + '/' + getBasename(file);
+		if (FILE_IGNORE_LIST.includes(getBasename(file))) {
+			console.warn(`An attempt was made to copy a file that is on the ignore list. File: ${file}`);
+			continue;
 		}
-		else {
-			// Check source is on ignore list
-			if (FILE_IGNORE_LIST.contains(basename(sourceFile))) {
-				console.warn(`An attempt was made to copy a file that is on the ignore list. File: ${sourceFile}`);
-				return;
-			}
-
-			// Copy file
-			copyFileSync(sourceFile, targetFile);
-		}
-	});
+		const content = await adapter.readBinary(file);
+		await adapter.writeBinary(targetFile, content);
+	}
 }
 
 /**
  * Ensure the path exist if not try to create it.
+ * @param adapter DataAdapter to use for file system operations
  * @param path The path to ensure
- * @param recursive [true] Indicates whether parent folders should be created.
- * @returns Returns ``true`` if the path exists, ``false`` if failed to create the path.
  */
-export function ensurePathExist(path: string[], recursive = true) {
-	// If path not exist create it
-	if (!existsSync(join(...path))) {
-		mkdirSync(join(...path), { recursive });
-		if (!existsSync(join(...path))) {
-			throw Error(`Could not create path! Path: ${path}`);
-		}
-	}
+export async function ensurePathExist(adapter: DataAdapter, path: string[]) {
+    const normalized = toPath(path);
+    if (!normalized || normalized === '/') return;
+    
+    const parts = normalized.split('/');
+    let currentPath = '';
+
+    for (const part of parts) {
+        currentPath = currentPath === '' ? part : `${currentPath}/${part}`;
+        if (!(await adapter.exists(currentPath))) {
+            await adapter.mkdir(currentPath);
+        }
+    }
 }
 
 /**
@@ -239,58 +292,46 @@ export function ensurePathExist(path: string[], recursive = true) {
  */
 export function isValidPath(path: string[]) {
 	// Check is not an empty string
-	if (join(...path) === '') {
+	if (path.join('/') === '') {
 		return false;
 	}
-
-	// accessSync(path, constants.F_OK);
-
 	return true;
 }
 
 /**
  * Remove recursive Folder Structure
+ * @param adapter DataAdapter to use for file system operations
  * @param path The folder to remove
  */
-export function removeDirectoryRecursiveSync(path: string[]) {
-	const pathS = join(...path);
+export async function removeDirectoryRecursiveSync(adapter: DataAdapter, path: string[]) {
+	const pathS = toPath(path);
 
-	if (existsSync(pathS)) {
-		if (statSync(pathS).isDirectory()) {
-			readdirSync(pathS).forEach(file => {
-				const filePath = join(pathS, file);
-
-				if (statSync(filePath).isDirectory()) {
-					// Recursively remove subdirectories
-					removeDirectoryRecursiveSync([filePath]);
-				}
-				else {
-					// Remove files
-					unlinkSync(filePath);
-				}
-			});
-
+	if (await adapter.exists(pathS)) {
+        const stat = await adapter.stat(pathS);
+		if (stat?.type === 'folder') {
+            const list = await adapter.list(pathS);
+            for (const folder of list.folders) {
+                await removeDirectoryRecursiveSync(adapter, [folder]);
+            }
+            for (const file of list.files) {
+                await adapter.remove(file);
+            }
 			// Remove the empty directory
-			rmdirSync(pathS);
+			await adapter.rmdir(pathS, true);
 		}
 		else {
 			// Remove file if not directory
-			rmSync(pathS);
+			await adapter.remove(pathS);
 		}
 	}
 }
 
 /**
  * Get the absolute path of this vault
- * @returns Returns the Absolute path
+ * @returns Returns the Absolute path (DEPRECATED FOR MOBILE: don't use this, use relative paths)
  */
 export function getVaultPath() {
-	const adapter = this.app.vault.adapter;
-	if (adapter instanceof FileSystemAdapter) {
-		return adapter.getBasePath();
-	}
-
-	return '';
+	return ''; // Not needed on mobile since adapter uses relative paths!
 }
 
 /**
@@ -300,176 +341,27 @@ export const FILE_IGNORE_LIST = [
 	'.DS_Store',
 ];
 
-/*
- * ----------------------------------------------------//
- *  Credits: https://github.com/fent/node-stream-equal //
- * ----------------------------------------------------//
- */
 /**
  * Checks the file content of the file is equal
+ * @param adapter DataAdapter to use for file system operations
  * @param file1 File path of first file
  * @param file2 File path of second file
  * @returns Are the files equal
  */
-export function filesEqual(file1: string, file2: string): Promise<boolean> {
-	const stream1 = createReadStream(file1);
-	const stream2 = createReadStream(file2);
-
-	return new Promise<boolean>((resolve, reject) => {
-		const readStream1 = stream1.pipe(new PassThrough({ objectMode: true }));
-		const readStream2 = stream2.pipe(new PassThrough({ objectMode: true }));
-
-		const cleanup = (equal: boolean) => {
-			stream1.removeListener('error', reject);
-			readStream1.removeListener('end', onend1);
-			readStream1.removeListener('readable', streamState1.read);
-
-			stream2.removeListener('error', reject);
-			readStream2.removeListener('end', onend2);
-			readStream1.removeListener('readable', streamState2.read);
-
-			resolve(equal);
-		};
-
-		const streamState1: StreamState = {
-			id: 1,
-			stream: readStream1,
-			data: null,
-			pos: 0,
-			ended: false,
-			read: () => { },
-		};
-		const streamState2: StreamState = {
-			id: 2,
-			stream: readStream2,
-			data: null,
-			pos: 0,
-			ended: false,
-			read: () => { },
-		};
-		streamState1.read = createOnRead(streamState1, streamState2, cleanup);
-		streamState2.read = createOnRead(streamState2, streamState1, cleanup);
-		const onend1 = createOnEndFn(streamState1, streamState2, cleanup);
-		const onend2 = createOnEndFn(streamState2, streamState1, cleanup);
-
-		stream1.on('error', reject);
-		readStream1.on('end', onend1);
-
-		stream2.on('error', reject);
-		readStream2.on('end', onend2);
-
-		// Start by reading from the first stream.
-		streamState1.stream.once('readable', streamState1.read);
-	});
-}
-
-interface StreamState {
-	id: number;
-	stream: Readable;
-	data: Buffer | null;
-	pos: number;
-	ended: boolean;
-	read: () => void;
-}
-
-/*
- * ----------------------------------------------------//
- *  Credits: https://github.com/fent/node-stream-equal //
- * ----------------------------------------------------//
- */
-/**
- * Creates a function that gets when a stream read
- *
- * @param streamState1
- * @param streamState2
- * @param resolve
- * @returns
- */
-function createOnRead(streamState1: StreamState, streamState2: StreamState, resolve: (equal: boolean) => void): () => void {
-	return () => {
-		let data = streamState1.stream.read();
-		if (!data) {
-			return streamState1.stream.once('readable', streamState1.read);
-		}
-
-		// Make sure `data` is a buffer.
-		if (!Buffer.isBuffer(data)) {
-			if (typeof data === 'object') {
-				data = JSON.stringify(data);
-			}
-			else {
-				data = data.toString();
-			}
-			data = Buffer.from(data);
-		}
-
-		const newPos = streamState1.pos + data.length;
-
-		if (streamState1.pos < streamState2.pos) {
-			if (!streamState2.data) {
-				return resolve(false);
-			}
-			const minLength = Math.min(data.length, streamState2.data.length);
-
-			const streamData = data.slice(0, minLength);
-			streamState1.data = data.slice(minLength);
-
-			const otherStreamData = streamState2.data.slice(0, minLength);
-			streamState2.data = streamState2.data.slice(minLength);
-
-			// Compare.
-			for (let i = 0; i < minLength; i++) {
-				if (streamData[i] !== otherStreamData[i]) {
-					return resolve(false);
-				}
-			}
-		}
-		else {
-			streamState1.data = data;
-		}
-
-		streamState1.pos = newPos;
-		if (newPos > streamState2.pos) {
-			if (streamState2.ended) {
-				/*
-				 * If this stream is still emitting `data` events but the other has
-				 * ended, then this is longer than the other one.
-				 */
-				return resolve(false);
-			}
-
-			/*
-			 * If this stream has caught up to the other,
-			 * read from other one.
-			 */
-			streamState2.read();
-		}
-		else {
-			streamState1.read();
-		}
-	};
-}
-
-/*
- * ----------------------------------------------------//
- *  Credits: https://github.com/fent/node-stream-equal //
- * ----------------------------------------------------//
- */
-/**
- * Creates a function that gets called when a stream ends.
- *
- * @param streamState1
- * @param streamState2
- * @param resolve
- */
-function createOnEndFn(streamState1: StreamState, streamState2: StreamState, resolve: (equal: boolean) => void): () => void {
-	return () => {
-		streamState1.ended = true;
-		if (streamState2.ended) {
-			resolve(streamState1.pos === streamState2.pos);
-		}
-		else {
-			streamState2.read();
-		}
-	};
+export async function filesEqual(adapter: DataAdapter, file1: string, file2: string): Promise<boolean> {
+    try {
+        const f1 = await adapter.readBinary(normalizePath(file1));
+        const f2 = await adapter.readBinary(normalizePath(file2));
+        
+        if (f1.byteLength !== f2.byteLength) return false;
+        
+        const dv1 = new Int8Array(f1);
+        const dv2 = new Int8Array(f2);
+        for (let i = 0 ; i !== f1.byteLength ; i++) {
+            if (dv1[i] !== dv2[i]) return false;
+        }
+        return true;
+    } catch(e) {
+        return false;
+    }
 }

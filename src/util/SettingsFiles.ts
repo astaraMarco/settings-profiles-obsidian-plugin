@@ -1,14 +1,21 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { join, normalize, sep as slash } from 'path';
-import { PROFILE_OPTIONS_MAP, ProfileOptions } from 'src/settings/SettingsInterface';
+import { DataAdapter, normalizePath } from 'obsidian';
+import { PROFILE_OPTIONS_MAP, ProfileOptions } from '../settings/SettingsInterface';
 import { ensurePathExist, filesEqual, getAllFiles, isValidPath } from './FileSystem';
 
 /**
+ * Normalizza il path gestendo correttamente gli array di path
+ */
+function toPath(pathArray: string[]): string {
+	return normalizePath(pathArray.join('/'));
+}
+
+/**
  * Saves the profile options data to the path.
+ * @param adapter The DataAdapter for file system access
  * @param profile The profile to save
  * @param profilesPath The path where the profile should be saved
  */
-export async function saveProfileOptions(profile: ProfileOptions, profilesPath: string) {
+export async function saveProfileOptions(adapter: DataAdapter, profile: ProfileOptions, profilesPath: string) {
 	try {
 		// Ensure is valid profile
 		if (!profile) {
@@ -21,12 +28,12 @@ export async function saveProfileOptions(profile: ProfileOptions, profilesPath: 
 		}
 
 		// Ensure path exist
-		ensurePathExist([profilesPath, profile.name]);
+		await ensurePathExist(adapter, [profilesPath, profile.name]);
 
 		// Write profile settings to path
-		const file = join(profilesPath, profile.name, 'profile.json');
+		const file = toPath([profilesPath, profile.name, 'profile.json']);
 		const profileSettings = JSON.stringify(profile, null, 2);
-		writeFileSync(file, profileSettings, 'utf-8');
+		await adapter.write(file, profileSettings);
 	}
 	catch (e) {
 		(e as Error).message = 'Failed to save profile data! ' + (e as Error).message;
@@ -36,12 +43,13 @@ export async function saveProfileOptions(profile: ProfileOptions, profilesPath: 
 
 /**
  * Saves the profiles options data to the path.
+ * @param adapter The DataAdapter for file system access
  * @param profilesList The profiles to save
  * @param profilesPath The path where the profiles should be saved
  */
-export async function saveProfilesOptions(profilesList: ProfileOptions[], profilesPath: string) {
+export async function saveProfilesOptions(adapter: DataAdapter, profilesList: ProfileOptions[], profilesPath: string) {
 	try {
-		profilesList.forEach(profile => {
+        for (const profile of profilesList) {
 			// Ensure is valid profile
 			if (!profile) {
 				throw Error(`Can't save undefined profile! Profile: ${JSON.stringify(profile)}`);
@@ -53,13 +61,13 @@ export async function saveProfilesOptions(profilesList: ProfileOptions[], profil
 			}
 
 			// Ensure path exist
-			ensurePathExist([profilesPath, profile.name]);
+			await ensurePathExist(adapter, [profilesPath, profile.name]);
 
 			// Write profile settings to path
-			const file = join(profilesPath, profile.name, 'profile.json');
+			const file = toPath([profilesPath, profile.name, 'profile.json']);
 			const profileSettings = JSON.stringify(profile, null, 2);
-			writeFileSync(file, profileSettings, 'utf-8');
-		});
+			await adapter.write(file, profileSettings);
+		}
 	}
 	catch (e) {
 		(e as Error).message = 'Failed to save profiles data! ' + (e as Error).message + ` ProfilesList: ${JSON.stringify(profilesList)}`;
@@ -69,30 +77,31 @@ export async function saveProfilesOptions(profilesList: ProfileOptions[], profil
 
 /**
  * Loads the profile options data form the path
+ * @param adapter The DataAdapter for file system access
  * @param profile The profile to load name is requierd
  * @param profilesPath The path where the profiles are saved
- * @param
  */
-export function loadProfileOptions(profile: Partial<ProfileOptions>, profilesPath: string): ProfileOptions {
+export async function loadProfileOptions(adapter: DataAdapter, profile: Partial<ProfileOptions>, profilesPath: string): Promise<ProfileOptions> {
 	try {
 		if (!profile.name) {
 			throw Error(`Name is requierd! Profile: ${JSON.stringify(profile)}`);
 		}
 
 		// Search for all profiles existing
-		const file = join(profilesPath, profile.name, 'profile.json');
+		const file = toPath([profilesPath, profile.name, 'profile.json']);
 		let profileData: ProfileOptions | undefined = undefined;
 
-		if (!existsSync(file)) {
+		if (!(await adapter.exists(file))) {
 			throw Error(`Path does not exist! Path: ${file}`);
 		}
 
-		if (!statSync(file).isFile()) {
+        const stat = await adapter.stat(file);
+		if (stat?.type !== 'file') {
 			throw Error(`The path does not point to a file. Path: ${file}`);
 		}
 
 		// Read profile settings
-		const data = readFileSync(file, 'utf-8');
+		const data = await adapter.read(file);
 		profileData = JSON.parse(data);
 
 		if (!profileData) {
@@ -112,24 +121,26 @@ export function loadProfileOptions(profile: Partial<ProfileOptions>, profilesPat
 
 /**
  * Loads the profiles options data form the path
+ * @param adapter The DataAdapter for file system access
  * @param profilesPath The path where the profiles are saved
  */
-export function loadProfilesOptions(profilesPath: string): ProfileOptions[] {
+export async function loadProfilesOptions(adapter: DataAdapter, profilesPath: string): Promise<ProfileOptions[]> {
 	try {
 		// Search for all profiles existing
-		const files = getAllFiles([profilesPath, `${slash}*${slash}profile.json`]);
+		const files = await getAllFiles(adapter, [profilesPath, `/*/profile.json`]);
 		const profilesList: ProfileOptions[] = [];
 
 		// Read profile settings
-		files.forEach(file => {
-			if (!existsSync(file)) {
+		for (const file of files) {
+			if (!(await adapter.exists(file))) {
 				throw Error(`Path does not exist! Path: ${file}`);
 			}
 
-			if (!statSync(file).isFile()) {
+            const stat = await adapter.stat(file);
+			if (stat?.type !== 'file') {
 				throw Error(`The path does not point to a file. Path: ${file}`);
 			}
-			const data = readFileSync(file, 'utf-8');
+			const data = await adapter.read(file);
 			const profileData = JSON.parse(data);
 
 			if (!profileData) {
@@ -140,7 +151,7 @@ export function loadProfilesOptions(profilesPath: string): ProfileOptions[] {
 			profileData.modifiedAt = new Date(profileData.modifiedAt);
 
 			profilesList.push(profileData);
-		});
+		}
 		return profilesList;
 	}
 	catch (e) {
@@ -153,7 +164,6 @@ export function loadProfilesOptions(profilesPath: string): ProfileOptions[] {
  * Returns all setting files if they are enabeled in profile
  * @param profile The profile for which the files will be returned
  * @returns an array of file names
- * @todo return {add: string[], remove: string[]}
  */
 export function getConfigFilesList(profile: ProfileOptions): string[] {
 	const files = [];
@@ -163,11 +173,11 @@ export function getConfigFilesList(profile: ProfileOptions): string[] {
 			if (typeof value === 'boolean' && key !== 'enabled' && value) {
 				const file = PROFILE_OPTIONS_MAP[key as keyof ProfileOptions]?.file;
 				if (file && typeof file === 'string') {
-					files.push(normalize(file));
+					files.push(normalizePath(file));
 				}
 				else if (file && Array.isArray(file)) {
 					file.forEach(f => {
-						files.push(normalize(f));
+						files.push(normalizePath(f));
 					});
 				}
 			}
@@ -179,36 +189,40 @@ export function getConfigFilesList(profile: ProfileOptions): string[] {
 
 /**
  * Returns all files without placeholder
+ * @param adapter The DataAdapter for file system access
  * @param filesList filesList Files list with placeholders
  * @param path Path to fill placeholders
  * @returns The files list without placeholder
  */
-export function getFilesWithoutPlaceholder(filesList: string[], path: string[]): string[] {
+export async function getFilesWithoutPlaceholder(adapter: DataAdapter, filesList: string[], path: string[]): Promise<string[]> {
 	const files: string[] = [];
-	filesList.forEach(file => {
-		if ((file.includes(`${slash}*${slash}`) || file.includes(`${slash}*`))) {
-			const pathVariants = getAllFiles([...path, file])
+	for (const file of filesList) {
+		if ((file.includes(`/*/`) || file.includes(`/*`))) {
+			const pathVariants = await getAllFiles(adapter, [...path, file]);
 
-				// Trim the start of path
-				.map(value => value.split(slash).slice(-file.split(slash).length));
+			// Trim the start of path
+            const suffixVariants = pathVariants.map(value => {
+                const parts = value.split('/');
+                const fileParts = file.split('/');
+                return parts.slice(-fileParts.length).join('/');
+            });
 
-			pathVariants.forEach(value => {
-				files.push(join(...value));
+			suffixVariants.forEach(value => {
+				files.push(value);
 			});
 		}
 		else {
 			files.push(file);
 		}
-	});
+	}
 
-	return files;
+	return [...new Set(files)]; // remove duplicates
 }
 
 /**
  * Returns all ignore files if they are enabeled in profile
  * @param profile The profile for which the files will be returned
  * @returns an array of file names
- * @todo return {add: string[], remove: string[]}
  */
 export function getIgnoreFilesList(profile: ProfileOptions): string[] {
 	const files = [];
@@ -218,11 +232,11 @@ export function getIgnoreFilesList(profile: ProfileOptions): string[] {
 			if (value && typeof value === 'boolean') {
 				const file = PROFILE_OPTIONS_MAP[key as keyof ProfileOptions]?.ignore;
 				if (file && typeof file === 'string') {
-					files.push(normalize(file));
+					files.push(normalizePath(file));
 				}
 				else if (file && Array.isArray(file)) {
 					file.forEach(f => {
-						files.push(normalize(f));
+						files.push(normalizePath(f));
 					});
 				}
 			}
@@ -232,169 +246,188 @@ export function getIgnoreFilesList(profile: ProfileOptions): string[] {
 	return files;
 }
 
-/**
- * Filter the file list to only include not ignore files
- * @param filesList Files list to compare
- * @param profile The profile for which the ignore files
- * @returns The filtered files list
- */
 export function filterIgnoreFilesList(filesList: string[], profile: ProfileOptions): string[] {
 	const ignoreFiles = getIgnoreFilesList(profile);
-	return filesList.filter((file) => !ignoreFiles.contains((file)));
+	return filesList.filter((file) => {
+		return !ignoreFiles.some(ignore => file === ignore || file.startsWith(ignore + '/'));
+	});
 }
 
 /**
  * Filter the file list to only include unchanged files
+ * @param adapter The DataAdapter for file system access
  * @param filesList Files list to compare
  * @param sourcePath The path to the source file
  * @param targetPath The path to the target file
  * @returns The filtered files list
  */
-export function filterUnchangedFiles(filesList: string[], sourcePath: string[], targetPath: string[]): string[] {
-	return filesList.filter((file) => {
-		const sourceFile = join(...sourcePath, file);
+export async function filterUnchangedFiles(adapter: DataAdapter, filesList: string[], sourcePath: string[], targetPath: string[]): Promise<string[]> {
+	const result: string[] = [];
+    for (const file of filesList) {
+		const sourceFile = toPath([...sourcePath, file]);
 
 		// Check source exist and is file
-		if (!existsSync(sourceFile)) {
-			return false;
+		if (!(await adapter.exists(sourceFile))) {
+			continue;
 		}
-		const sourceStat = statSync(sourceFile);
-		if (!sourceStat.isFile()) {
-			return false;
+		const sourceStat = await adapter.stat(sourceFile);
+		if (sourceStat?.type !== 'file') {
+			continue;
 		}
-		const targetFile = join(...targetPath, file);
+		const targetFile = toPath([...targetPath, file]);
 
 		// Check target don't exist
-		if (!existsSync(targetFile)) {
-			return false;
+		if (!(await adapter.exists(targetFile))) {
+			continue;
 		}
-		const targetStat = statSync(targetFile);
+		const targetStat = await adapter.stat(targetFile);
 
 		// Check target is file
-		if (!targetStat.isFile()) {
-			return false;
+		if (targetStat?.type !== 'file') {
+			continue;
 		}
 
 		// Check file size
 		if (sourceStat.size !== targetStat.size) {
-			return false;
+			continue;
 		}
 
-		return filesEqual(sourceFile, targetFile);
-	});
+		if (await filesEqual(adapter, sourceFile, targetFile)) {
+            result.push(file);
+        }
+	}
+    return result;
 }
 
 /**
  * Filter the file list to only include changed files
+ * @param adapter The DataAdapter for file system access
  * @param filesList Files list to compare
  * @param sourcePath The path to the source file
  * @param targetPath The path to the target file
  * @returns The filtered files list
  */
-export function filterChangedFiles(filesList: string[], sourcePath: string[], targetPath: string[]): string[] {
-	return filesList.filter((file) => {
-		const sourceFile = join(...sourcePath, file);
+export async function filterChangedFiles(adapter: DataAdapter, filesList: string[], sourcePath: string[], targetPath: string[]): Promise<string[]> {
+	const result: string[] = [];
+    for (const file of filesList) {
+		const sourceFile = toPath([...sourcePath, file]);
 
 		// Check source exist and is file
-		if (!existsSync(sourceFile)) {
-			return false;
+		if (!(await adapter.exists(sourceFile))) {
+			continue;
 		}
-		const sourceStat = statSync(sourceFile);
+		const sourceStat = await adapter.stat(sourceFile);
 
 		// Check source is file
-		if (!sourceStat.isFile()) {
-			return false;
+		if (sourceStat?.type !== 'file') {
+			continue;
 		}
-		const targetFile = join(...targetPath, file);
+		const targetFile = toPath([...targetPath, file]);
 
 		// Check target don't exist
-		if (!existsSync(targetFile)) {
-			return true;
+		if (!(await adapter.exists(targetFile))) {
+			result.push(file);
+            continue;
 		}
-		const targetStat = statSync(targetFile);
+		const targetStat = await adapter.stat(targetFile);
 
 		// Check target is file
-		if (!targetStat.isFile()) {
-			return true;
+		if (targetStat?.type !== 'file') {
+			result.push(file);
+            continue;
 		}
 
 		// Check file size
 		if (sourceStat.size !== targetStat.size) {
-			return true;
+			result.push(file);
+            continue;
 		}
 
-		return !filesEqual(sourceFile, targetFile);
-	});
+		if (!(await filesEqual(adapter, sourceFile, targetFile))) {
+            result.push(file);
+        }
+	}
+    return result;
 }
 
 /**
  * Filter the file list to only include the files there are newer in source than in target
+ * @param adapter The DataAdapter for file system access
  * @param filesList Files list to compare
  * @param sourcePath The path to the source file
  * @param targetPath The path to the target file
  * @returns The filterd files list
  */
-export function filterNewerFiles(filesList: string[], sourcePath: string[], targetPath: string[]): string[] {
-	return filesList.filter((file) => {
-		const sourceFile = join(...sourcePath, file);
+export async function filterNewerFiles(adapter: DataAdapter, filesList: string[], sourcePath: string[], targetPath: string[]): Promise<string[]> {
+	const result: string[] = [];
+    for(const file of filesList) {
+		const sourceFile = toPath([...sourcePath, file]);
 
 		// Check source exist and is file
-		if (!existsSync(sourceFile)) {
-			return false;
+		if (!(await adapter.exists(sourceFile))) {
+			continue;
 		}
-		const sourceStat = statSync(sourceFile);
-		if (!sourceStat.isFile()) {
-			return false;
+		const sourceStat = await adapter.stat(sourceFile);
+		if (sourceStat?.type !== 'file') {
+			continue;
 		}
-		const targetFile = join(...targetPath, file);
+		const targetFile = toPath([...targetPath, file]);
 
 		// Check target don't exist
-		if (!existsSync(targetFile)) {
-			return true;
+		if (!(await adapter.exists(targetFile))) {
+			result.push(file);
+            continue;
 		}
 
-		const targetStat = statSync(targetFile);
-		return sourceStat.mtime.getTime() > targetStat.mtime.getTime();
-	});
+		const targetStat = await adapter.stat(targetFile);
+		if (sourceStat && targetStat && sourceStat.mtime > targetStat.mtime) {
+            result.push(file);
+        }
+	}
+    return result;
 }
 
 /**
  * Check the files list contains a changed file
+ * @param adapter The DataAdapter for file system access
  * @param filesList Files list to compare
  * @param sourcePath The path to the source file
  * @param targetPath The path to the target file
  * @returns Is there a changed file
  */
-export function containsChangedFiles(filesList: string[], sourcePath: string[], targetPath: string[]): boolean {
-	return !filesList.every(async (file) => {
-		const sourceFile = join(...sourcePath, file);
+export async function containsChangedFiles(adapter: DataAdapter, filesList: string[], sourcePath: string[], targetPath: string[]): Promise<boolean> {
+	for(const file of filesList) {
+		const sourceFile = toPath([...sourcePath, file]);
 
 		// Check source exist and is file
-		if (!existsSync(sourceFile)) {
+		if (!(await adapter.exists(sourceFile))) {
 			return true;
 		}
-		const sourceStat = statSync(sourceFile);
-		if (!sourceStat.isFile()) {
+		const sourceStat = await adapter.stat(sourceFile);
+		if (sourceStat?.type !== 'file') {
 			return true;
 		}
-		const targetFile = join(...targetPath, file);
+		const targetFile = toPath([...targetPath, file]);
 
 		// Check target don't exist
-		if (!existsSync(targetFile)) {
-			return false;
+		if (!(await adapter.exists(targetFile))) {
+			continue;
 		}
-		const targetStat = statSync(targetFile);
+		const targetStat = await adapter.stat(targetFile);
 
 		// Check target is file
-		if (!targetStat.isFile()) {
-			return false;
+		if (targetStat?.type !== 'file') {
+			continue;
 		}
 
 		// Check file size
 		if (sourceStat.size !== targetStat.size) {
-			return false;
+			continue;
 		}
 
-		return await filesEqual(sourceFile, targetFile);
-	});
+		if (!(await filesEqual(adapter, sourceFile, targetFile))) {
+            return true;
+        }
+	}
+    return false;
 }

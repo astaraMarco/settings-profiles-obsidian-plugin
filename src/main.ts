@@ -1,47 +1,27 @@
-import { Notice, debounce } from 'obsidian';
-import { SettingsProfilesSettingTab } from 'src/settings/SettingsTab';
+import { Notice, normalizePath, DataAdapter } from 'obsidian';
+import { SettingsProfilesSettingTab } from './settings/SettingsTab';
 import { ProfileSwitcherModal } from './modals/ProfileSwitcherModal';
-import { copyFile, ensurePathExist, getVaultPath, isValidPath, removeDirectoryRecursiveSync } from './util/FileSystem';
+import { copyFile, ensurePathExist, isValidPath, removeDirectoryRecursiveSync } from './util/FileSystem';
 import { DEFAULT_VAULT_SETTINGS, VaultSettings, ProfileOptions, GlobalSettings, DEFAULT_GLOBAL_SETTINGS, DEFAULT_PROFILE_OPTIONS, DEFAULT_PROFILE_PATH, StatusbarClickAction } from './settings/SettingsInterface';
 import { containsChangedFiles, filterChangedFiles, filterIgnoreFilesList, getConfigFilesList, getFilesWithoutPlaceholder, getIgnoreFilesList, loadProfileOptions, loadProfilesOptions, saveProfileOptions } from './util/SettingsFiles';
-import { isAbsolute, join, normalize } from 'path';
-import { FSWatcher, existsSync, watch } from 'fs';
 import { DialogModal } from './modals/DialogModal';
 import PluginExtended from './core/PluginExtended';
 import { ICON_CURRENT_PROFILE, ICON_NO_CURRENT_PROFILE, ICON_UNLOADED_PROFILE, ICON_UNSAVED_PROFILE } from './constants';
-import { machineIdSync } from 'node-machine-id';
 
 export default class SettingsProfilesPlugin extends PluginExtended {
 	private vaultSettings: VaultSettings;
 	private globalSettings: GlobalSettings;
 	private statusBarItem: HTMLElement;
-	private settingsListener: FSWatcher;
+
+    get adapter(): DataAdapter {
+        return this.app.vault.adapter;
+    }
 
 	async onload() {
 		await this.loadSettings();
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingsProfilesSettingTab(this.app, this));
-
-		// Add settings change listener
-		/** @todo watch didn't support recursive on Linux */
-		if (this.getProfileUpdate()) {
-			this.settingsListener = watch(join(getVaultPath(), this.app.vault.configDir), { recursive: true }, debounce((eventType, filename) => {
-				if (eventType !== 'change' || !filename) return;
-
-				const profile = this.getCurrentProfile();
-				if (profile) {
-					if (profile.autoSync) {
-						this.updateProfile();
-					}
-					else if (!getIgnoreFilesList(profile).contains(filename)) {
-						// TODO: Maybe use like git reference by content with a hash over the content to identify changes instead of modifiedAt date should be more stable with synchronizing across devices
-						profile.modifiedAt = new Date();
-						this.updateCurrentProfile(profile);
-					}
-				}
-			}, this.getProfileUpdateDelay(), true));
-		}
 
 		// Update UI at Interval
 		if (this.getUiUpdate()) {
@@ -73,8 +53,8 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 		this.addCommand({
 			id: 'save-current-profile',
 			name: 'Save current profile',
-			callback: () => {
-				this.refreshProfilesList();
+			callback: async () => {
+				await this.refreshProfilesList();
 				const profile = this.getCurrentProfile();
 				if (profile) {
 					this.saveProfileSettings(profile)
@@ -94,8 +74,8 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 		this.addCommand({
 			id: 'load-current-profile',
 			name: 'Reload current profile',
-			callback: () => {
-				this.refreshProfilesList();
+			callback: async () => {
+				await this.refreshProfilesList();
 				const profile = this.getCurrentProfile();
 				if (profile) {
 					this.loadProfileSettings(profile)
@@ -131,23 +111,20 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	}
 
 	onunload() {
-		if (this.settingsListener) {
-			this.settingsListener.close();
-		}
 	}
 
 	/**
 	 * Update profile save state
 	 */
-	updateProfile() {
-		this.refreshProfilesList();
+	async updateProfile() {
+		await this.refreshProfilesList();
 		const profile = this.getCurrentProfile();
 
 		if (profile) {
-			if (!this.areSettingsSaved(profile)) {
+			if (!(await this.areSettingsSaved(profile))) {
 				// Save settings to profile
 				if (profile.autoSync) {
-					this.saveProfileSettings(profile);
+					await this.saveProfileSettings(profile);
 				}
 			}
 		}
@@ -156,7 +133,7 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	/**
 	 * Update status bar
 	 */
-	updateUI() {
+	async updateUI() {
 		const profile = this.getCurrentProfile();
 
 		let icon = ICON_NO_CURRENT_PROFILE;
@@ -165,8 +142,8 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 		// Attach status bar item
 		try {
 			if (profile) {
-				if (this.isProfileSaved(profile)) {
-					if (this.isProfileUpToDate(profile)) {
+				if (await this.isProfileSaved(profile)) {
+					if (await this.isProfileUpToDate(profile)) {
 						// Profile is up-to-date and saved
 						icon = ICON_CURRENT_PROFILE;
 						label = 'Profile up-to-date';
@@ -195,9 +172,9 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			this.updateStatusBarItem(this.statusBarItem, icon, profile?.name, label);
 		}
 		else {
-			this.statusBarItem = this.addStatusBarItem(icon, profile?.name, label, (ev: MouseEvent) => {
+			this.statusBarItem = this.addStatusBarItem(icon, profile?.name, label, async (ev: MouseEvent) => {
 				try {
-					const loadCallback = (profile: ProfileOptions) => {
+					const loadCallback = async (profile: ProfileOptions) => {
 						this.loadProfileSettings(profile)
 							.then((profile) => {
 								this.updateCurrentProfile(profile);
@@ -215,7 +192,7 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 									.open();
 							});
 					};
-					const saveCallback = (profile: ProfileOptions) => {
+					const saveCallback = async (profile: ProfileOptions) => {
 						this.saveProfileSettings(profile)
 							.then(() => {
 								new Notice('Saved profile successfully.');
@@ -234,19 +211,19 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 						throw Error('Can not handle more than one modifier key!');
 					}
 					else if ((modifiers === 0 && click_action == 'auto') || (ev.ctrlKey && ctrl_action == 'auto') || (ev.shiftKey && shift_action == 'auto') || (ev.altKey && alt_action == 'auto')) {
-						if (!profile || this.isProfileSaved(profile)) {
-							if (!profile || this.isProfileUpToDate(profile)) {
+						if (!profile || (await this.isProfileSaved(profile))) {
+							if (!profile || (await this.isProfileUpToDate(profile))) {
 								// Profile is up-to-date and saved
 								new ProfileSwitcherModal(this.app, this).open();
 							}
 							else {
 								// Profile is not up to date
-								loadCallback(profile);
+								await loadCallback(profile);
 							}
 						}
 						else {
 							// Profile is not saved
-							saveCallback(profile);
+							await saveCallback(profile);
 						}
 					}
 					else if ((modifiers === 0 && click_action == 'switch') || (ev.ctrlKey && ctrl_action == 'switch') || (ev.shiftKey && shift_action == 'switch') || (ev.altKey && alt_action == 'switch')) {
@@ -260,10 +237,10 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 						throw Error('No current profile! But is required for save or load.');
 					}
 					else if ((modifiers === 0 && click_action == 'load') || (ev.ctrlKey && ctrl_action == 'load') || (ev.shiftKey && shift_action == 'load') || (ev.altKey && alt_action == 'load')) {
-						loadCallback(profile);
+						await loadCallback(profile);
 					}
 					else if ((modifiers === 0 && click_action == 'save') || (ev.ctrlKey && ctrl_action == 'save') || (ev.shiftKey && shift_action == 'save') || (ev.altKey && alt_action == 'save')) {
-						saveCallback(profile);
+						await saveCallback(profile);
 					}
 					else {
 						throw Error('Unknown Configuration!');
@@ -288,7 +265,7 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 
 			// Load global settings from profiles path
 			this.globalSettings = DEFAULT_GLOBAL_SETTINGS;
-			this.refreshProfilesList();
+			await this.refreshProfilesList();
 		}
 		catch (e) {
 			(e as Error).message = 'Failed to load settings! ' + (e as Error).message + ` VaultSettings: ${JSON.stringify(this.vaultSettings)} GlobalSettings: ${JSON.stringify(this.globalSettings)}`;
@@ -322,25 +299,25 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	 * @param profile The profile to check
 	 * @returns `true` if at least one file has changed and is newer than the saved profile
 	 */
-	areSettingsChanged(profile: ProfileOptions): boolean {
+	async areSettingsChanged(profile: ProfileOptions): Promise<boolean> {
 		try {
-			const sourcePath = [getVaultPath(), this.app.vault.configDir];
-			const targetPath = [this.getAbsoluteProfilesPath(), profile.name];
+			const sourcePath = [this.app.vault.configDir];
+			const targetPath = [this.getProfilesPath(), profile.name];
 
 			// Check target dir exist
-			if (!existsSync(join(...sourcePath))) {
-				throw Error(`Source path do not exist! SourcePath: ${join(...sourcePath)}`);
+			if (!(await this.adapter.exists(normalizePath(sourcePath.join('/'))))) {
+				throw Error(`Source path do not exist! SourcePath: ${sourcePath.join('/')}`);
 			}
 
 			// Target does not exist
-			if (!existsSync(join(...targetPath))) {
+			if (!(await this.adapter.exists(normalizePath(targetPath.join('/'))))) {
 				return true;
 			}
 
 			let filesList = getConfigFilesList(profile);
-			filesList = getFilesWithoutPlaceholder(filesList, sourcePath);
+			filesList = await getFilesWithoutPlaceholder(this.adapter, filesList, sourcePath);
 			filesList = filterIgnoreFilesList(filesList, profile);
-			return containsChangedFiles(filesList, targetPath, sourcePath);
+			return await containsChangedFiles(this.adapter, filesList, targetPath, sourcePath);
 		}
 		catch (e) {
 			(e as Error).message = 'Failed to check settings changed! ' + (e as Error).message + ` Profile: ${JSON.stringify(profile)}`;
@@ -354,25 +331,25 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	 * @param profile The profile to check
 	 * @returns `true` if at no file has changed or all are older than the saved profile
 	 */
-	areSettingsSaved(profile: ProfileOptions): boolean {
+	async areSettingsSaved(profile: ProfileOptions): Promise<boolean> {
 		try {
-			const sourcePath = [getVaultPath(), this.app.vault.configDir];
-			const targetPath = [this.getAbsoluteProfilesPath(), profile.name];
+			const sourcePath = [this.app.vault.configDir];
+			const targetPath = [this.getProfilesPath(), profile.name];
 
 			// Check target dir exist
-			if (!existsSync(join(...sourcePath))) {
-				throw Error(`Source path do not exist! SourcePath: ${join(...sourcePath)}`);
+			if (!(await this.adapter.exists(normalizePath(sourcePath.join('/'))))) {
+				throw Error(`Source path do not exist! SourcePath: ${sourcePath.join('/')}`);
 			}
 
 			// Target does not exist
-			if (!existsSync(join(...targetPath))) {
+			if (!(await this.adapter.exists(normalizePath(targetPath.join('/'))))) {
 				return false;
 			}
 
 			let filesList = getConfigFilesList(profile);
-			filesList = getFilesWithoutPlaceholder(filesList, sourcePath);
+			filesList = await getFilesWithoutPlaceholder(this.adapter, filesList, sourcePath);
 			filesList = filterIgnoreFilesList(filesList, profile);
-			return !containsChangedFiles(filesList, sourcePath, targetPath);
+			return !(await containsChangedFiles(this.adapter, filesList, sourcePath, targetPath));
 		}
 		catch (e) {
 			(e as Error).message = 'Failed to check settings changed! ' + (e as Error).message + ` Profile: ${JSON.stringify(profile)}`;
@@ -391,11 +368,13 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			await this.loadProfile(profile.name);
 
 			// Load profile data
-			this.getProfilesList().forEach((value, index, array) => {
+            const profilesPath = this.getProfilesPath();
+            for (let index = 0; index < this.getProfilesList().length; index++) {
+                const value = this.getProfilesList()[index];
 				if (value.name === profile.name) {
-					array[index] = loadProfileOptions(profile, this.getAbsoluteProfilesPath()) || value;
+					this.getProfilesList()[index] = (await loadProfileOptions(this.adapter, profile, profilesPath)) || value;
 				}
-			});
+			}
 			return this.getProfile(profile.name);
 		}
 		catch (e) {
@@ -414,10 +393,10 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			await this.saveProfile(profile.name);
 
 			// Save profile data
-			await saveProfileOptions(profile, this.getAbsoluteProfilesPath());
+			await saveProfileOptions(this.adapter, profile, this.getProfilesPath());
 
 			// Reload profiles list from files
-			this.refreshProfilesList();
+			await this.refreshProfilesList();
 
 			return this.getProfile(profile.name);
 		}
@@ -433,7 +412,7 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	 */
 	async switchProfile(profileName: string) {
 		try {
-			this.refreshProfilesList();
+			await this.refreshProfilesList();
 			const currentProfile = this.getCurrentProfile();
 
 			// Deselect profile
@@ -579,8 +558,8 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			}
 
 			// Remove to profile settings
-			removeDirectoryRecursiveSync([this.getAbsoluteProfilesPath(), profileName]);
-			this.refreshProfilesList();
+			await removeDirectoryRecursiveSync(this.adapter, [this.getProfilesPath(), profileName]);
+			await this.refreshProfilesList();
 			await this.saveSettings();
 		}
 		catch (e) {
@@ -593,31 +572,30 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	/**
 	 * Save the profile settings
 	 * @param profileName The name of the profile to load.
-	 * @todo Update profile data/settings only when changed
 	 */
 	private async saveProfile(profileName: string) {
 		try {
 			const profile = this.getProfile(profileName);
 
-			const sourcePath = [getVaultPath(), this.app.vault.configDir];
-			const targetPath = [this.getAbsoluteProfilesPath(), profileName];
+			const sourcePath = [this.app.vault.configDir];
+			const targetPath = [this.getProfilesPath(), profileName];
 			let changed = false;
 
 			// Check target dir exist
-			ensurePathExist([...targetPath]);
+			await ensurePathExist(this.adapter, [...targetPath]);
 
 			let filesList = getConfigFilesList(profile);
 			filesList = filterIgnoreFilesList(filesList, profile);
-			filesList = getFilesWithoutPlaceholder(filesList, sourcePath);
+			filesList = await getFilesWithoutPlaceholder(this.adapter, filesList, sourcePath);
 			filesList = filterIgnoreFilesList(filesList, profile);
-			filesList = filterChangedFiles(filesList, sourcePath, targetPath);
+			filesList = await filterChangedFiles(this.adapter, filesList, sourcePath, targetPath);
 
-			filesList.forEach(file => {
-				if (existsSync(join(...sourcePath, file))) {
+            for(const file of filesList) {
+				if (await this.adapter.exists(normalizePath([...sourcePath, file].join('/')))) {
 					changed = true;
-					copyFile([...sourcePath, file], [...targetPath, file]);
+					await copyFile(this.adapter, [...sourcePath, file], [...targetPath, file]);
 				}
-			});
+			}
 
 			// Update profile data
 			if (changed) {
@@ -642,25 +620,30 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 		try {
 			const profile = this.getProfile(profileName);
 
-			const sourcePath = [this.getAbsoluteProfilesPath(), profileName];
-			const targetPath = [getVaultPath(), this.app.vault.configDir];
+			const sourcePath = [this.getProfilesPath(), profileName];
+			const targetPath = [this.app.vault.configDir];
 
 			// Check target dir exist
-			if (!existsSync(join(...sourcePath))) {
-				throw Error(`Source path do not exist! SourcePath: ${join(...sourcePath)}`);
+			if (!(await this.adapter.exists(normalizePath(sourcePath.join('/'))))) {
+				throw Error(`Source path do not exist! SourcePath: ${sourcePath.join('/')}`);
 			}
 
 			let filesList = getConfigFilesList(profile);
 			filesList = filterIgnoreFilesList(filesList, profile);
-			filesList = getFilesWithoutPlaceholder(filesList, sourcePath);
+			filesList = await getFilesWithoutPlaceholder(this.adapter, filesList, sourcePath);
 			filesList = filterIgnoreFilesList(filesList, profile);
-			filesList = filterChangedFiles(filesList, sourcePath, targetPath);
+			filesList = await filterChangedFiles(this.adapter, filesList, sourcePath, targetPath);
 
-			filesList.forEach(file => {
-				if (existsSync(join(...sourcePath, file))) {
-					copyFile([...sourcePath, file], [...targetPath, file]);
-				}
-			});
+            for (const file of filesList) {
+                if (await this.adapter.exists(normalizePath([...sourcePath, file].join('/')))) {
+                    await copyFile(this.adapter, [...sourcePath, file], [...targetPath, file]);
+                }
+            }
+
+			// Ensure this plugin stays enabled after loading the new profile
+			if (profile.communityPlugins) {
+				await this.ensurePluginEnabled();
+			}
 
 			// Change active profile
 			this.updateCurrentProfile(profile);
@@ -673,21 +656,59 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	}
 
 	/**
+	 * Ensures this plugin's ID is always present in community-plugins.json
+	 * so it never gets disabled when loading a profile.
+	 */
+	private async ensurePluginEnabled() {
+		try {
+			const pluginId = this.manifest.id;
+			const communityPluginsFile = normalizePath(`${this.app.vault.configDir}/community-plugins.json`);
+
+			if (!(await this.adapter.exists(communityPluginsFile))) {
+				// Write a fresh list with just this plugin
+				await this.adapter.write(communityPluginsFile, JSON.stringify([pluginId], null, 2));
+				return;
+			}
+
+			const raw = await this.adapter.read(communityPluginsFile);
+			let enabledPlugins: string[] = JSON.parse(raw);
+
+			if (!Array.isArray(enabledPlugins)) {
+				enabledPlugins = [];
+			}
+
+			if (!enabledPlugins.includes(pluginId)) {
+				enabledPlugins.push(pluginId);
+				await this.adapter.write(communityPluginsFile, JSON.stringify(enabledPlugins, null, 2));
+			}
+		}
+		catch (e) {
+			(e as Error).message = 'Failed to ensure plugin is enabled! ' + (e as Error).message;
+			console.error(e);
+		}
+	}
+
+	/**
+     * Generate or fetch a locally stored unique device ID
+     */
+    private getDeviceID(): string {
+        let deviceID = window.localStorage.getItem('settings-profiles-device-id');
+        if (!deviceID) {
+            deviceID = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+                const r = Math.random() * 16 | 0, v = c === 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+            window.localStorage.setItem('settings-profiles-device-id', deviceID);
+        }
+        return deviceID;
+    }
+
+	/**
 	 * Retrieves the profile path for the current device.
-	 *
-	 * This function uses the machine ID to look up the associated profile path from the vault settings.
-	 * If the profile path is missing, it attempts to use a deprecated path and updates the vault settings accordingly.
-	 * If neither the current nor deprecated paths are available, it creates a entry for current device with default profiles path.
-	 *
-	 * @returns {string} The normalized profile path for the current device.
-	 * @throws {Error} If the device ID cannot be determined.
 	 */
 	getProfilesPath(): string {
-		const deviceID = machineIdSync(false);
-		if (!deviceID || deviceID === '') {
-			throw Error('Failed to load device ID!');
-		}
-
+		const deviceID = this.getDeviceID();
+		
 		const devicePath = this.vaultSettings.devices[deviceID];
 		if (!devicePath || devicePath === '') {
 			const deprecatedPath = this.vaultSettings.profilesPath;
@@ -696,7 +717,7 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 				this.vaultSettings.devices[deviceID] = deprecatedPath;
 				this.saveSettings();
 
-				return normalize(deprecatedPath);
+				return normalizePath(deprecatedPath);
 			}
 			else {
 				// No path found, using default profile path
@@ -704,60 +725,22 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 				this.vaultSettings.devices[deviceID] = DEFAULT_PROFILE_PATH;
 				this.saveSettings();
 
-				return normalize(DEFAULT_PROFILE_PATH);
+				return normalizePath(DEFAULT_PROFILE_PATH);
 			}
 		}
 
-		return normalize(devicePath);
-	}
-
-	/**
-	 * Retrieves the absolute profile path for the current device.
-	 *
-	 * This function ensures that the profile path returned is an absolute path.
-	 * If the path is relative, it joins it with the vault path to convert it into an absolute path.
-	 * It validates the resulting path is an valid path.
-	 *
-	 * @returns {string} The normalized absolute profile path for the current device.
-	 * @throws {Error} If the device ID cannot be determined.
-	 * @throws {Error} If no valid profiles path can be found.
-	 */
-	getAbsoluteProfilesPath(): string {
-		const relativePath = this.getProfilesPath();
-		let path = relativePath;
-
-		if (!isAbsolute(path)) {
-			path = join(getVaultPath(), path);
-		}
-
-		if (!isValidPath([path])) {
-			throw Error(`No valid profiles path could be found! Path: ${path} ProfilesPath: ${relativePath}`);
-		}
-
-		return normalize(path);
+		return normalizePath(devicePath);
 	}
 
 	/**
 	 * Sets the profile path in the vault settings for the current device ID.
-	 *
-	 * This function retrieves the device ID and updates its associated profile
-	 * path in the vault settings. If the provided path is invalid (empty after normalization),
-	 * an error is thrown, and the path is not updated.
-	 *
-	 * @param {string} path - The new profile path to be set for the current device.
-	 *
-	 * @throws {Error} If the device ID cannot be determined.
-	 * @throws {Error} If the provided path is invalid (empty after normalization).
 	 */
 	setProfilePath(path: string) {
-		const deviceID = machineIdSync(false);
-		if (!deviceID || deviceID === '') {
-			throw Error('Failed to load device ID!');
-		}
-
+		const deviceID = this.getDeviceID();
+        
 		path = path.trim();
 		if (path !== '') {
-			this.vaultSettings.devices[deviceID] = normalize(path);
+			this.vaultSettings.devices[deviceID] = normalizePath(path);
 		}
 		else {
 			throw Error('Profile path failed to update. The provided path is invalid!');
@@ -767,16 +750,16 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	/**
 	 * Reloads the profiles list from files.
 	 */
-	refreshProfilesList() {
+	async refreshProfilesList() {
 		try {
-			this.globalSettings.profilesList = loadProfilesOptions(this.getAbsoluteProfilesPath());
+			this.globalSettings.profilesList = await loadProfilesOptions(this.adapter, this.getProfilesPath());
 			return;
 		}
 		catch (e) {
 			console.warn(`Refresh profiles list failed with stored values because of: ${e.message}`);
 		}
 		try {
-			this.globalSettings.profilesList = loadProfilesOptions(DEFAULT_PROFILE_PATH);
+			this.globalSettings.profilesList = await loadProfilesOptions(this.adapter, DEFAULT_PROFILE_PATH);
 		}
 		catch (e) {
 			console.error(`Refresh profiles list failed with default path because of: ${e.message}`);
@@ -1005,8 +988,8 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	 * @param profile The profile to check
 	 * @returns Is loaded profile newer/equal than saved profile
 	 */
-	isProfileUpToDate(profile: ProfileOptions): boolean {
-		const profileOptions = loadProfileOptions(profile, this.getAbsoluteProfilesPath());
+	async isProfileUpToDate(profile: ProfileOptions): Promise<boolean> {
+		const profileOptions = await loadProfileOptions(this.adapter, profile, this.getProfilesPath());
 
 		if (!profileOptions || !profileOptions.modifiedAt) {
 			return true;
@@ -1016,7 +999,7 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			return true;
 		}
 
-		return !this.areSettingsChanged(profile);
+		return !(await this.areSettingsChanged(profile));
 	}
 
 	/**
@@ -1024,8 +1007,8 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	 * @param profile The profile to check
 	 * @returns Is saved profile newer/equal than saved profile
 	 */
-	isProfileSaved(profile: ProfileOptions): boolean {
-		const profileOptions = loadProfileOptions(profile, this.getAbsoluteProfilesPath());
+	async isProfileSaved(profile: ProfileOptions): Promise<boolean> {
+		const profileOptions = await loadProfileOptions(this.adapter, profile, this.getProfilesPath());
 
 		if (!profileOptions || !profileOptions.modifiedAt) {
 			return false;
@@ -1035,6 +1018,6 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			return true;
 		}
 
-		return this.areSettingsSaved(profile);
+		return await this.areSettingsSaved(profile);
 	}
 }
