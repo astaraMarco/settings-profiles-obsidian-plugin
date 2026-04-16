@@ -28,6 +28,19 @@ export interface VaultSettings {
 	uiUpdate: boolean;
 	uiUpdateInterval: number;
 	devices: Device;
+
+	/**
+	 * When true, each device tracks its own active profile independently.
+	 * When false (default), all devices share the same activeProfile.
+	 */
+	deviceActiveProfile: boolean;
+
+	/**
+	 * Per-device active profile map (used when deviceActiveProfile is true).
+	 * Key = device ID, value = partial ProfileOptions (name + modifiedAt).
+	 */
+	deviceProfiles: Record<string, Partial<ProfileOptions>>;
+
 	statusbarInteraction: {
 		click: StatusbarClickAction,
 		ctrl_click: StatusbarClickAction,
@@ -36,7 +49,7 @@ export interface VaultSettings {
 	}
 }
 
-export const DEFAULT_PROFILE_PATH = '.obsidian/plugins/settings-profiles-v2/profiles';
+export const DEFAULT_PROFILE_PATH = '.obsidian/plugins/astar-settings-profiles/profiles';
 
 export const DEFAULT_VAULT_SETTINGS: VaultSettings = {
 	activeProfile: {},
@@ -45,6 +58,8 @@ export const DEFAULT_VAULT_SETTINGS: VaultSettings = {
 	uiUpdate: true,
 	uiUpdateInterval: 1000,
 	devices: {},
+	deviceActiveProfile: false,
+	deviceProfiles: {},
 	statusbarInteraction: {
 		click: 'auto',
 		ctrl_click: 'none',

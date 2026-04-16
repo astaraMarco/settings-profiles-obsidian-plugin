@@ -1,9 +1,9 @@
 {
-	"id": "settings-profiles",
-	"name": "Settings profiles",
-	"version": "0.8.0",
+	"id": "astar-settings-profiles",
+	"name": "Astar's Settings Profiles",
+	"version": "0.8.1",
 	"minAppVersion": "0.15.0",
-	"description": "Allows you to create various global settings profiles. You can sync them between different vaults. To keep all your settings in sync, you'll never have to manually adjust them again for every vault you have or create in the future.",
+	"description": "",
 	"author": "astar",
 	"authorUrl": "",
 	"isDesktopOnly": false

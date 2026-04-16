@@ -285,6 +285,31 @@ export class SettingsProfilesSettingTab extends PluginSettingTab {
 		}
 
 		new Setting(containerEl)
+			.setName('Device-specific active profile')
+			.setDesc(createFragment((fragment) => {
+				fragment.append(
+					fragment.createEl('div', { text: 'When enabled, each device tracks its own active profile independently. Switching or loading a profile on one device will not affect other devices.' }),
+					fragment.createEl('div', { text: 'Disable to share the same active profile across all devices (original behavior).', cls: 'mod-warning' })
+				);
+			}))
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.getDeviceActiveProfile())
+				.onChange(value => {
+					try {
+						this.plugin.setDeviceActiveProfile(value);
+						this.plugin.saveSettings()
+							.then(() => {
+								this.display();
+							});
+					}
+					catch (e) {
+						(e as Error).message = 'Failed to change device active profile! ' + (e as Error).message;
+						console.error(e);
+					}
+				})
+				.toggleEl.setAttr('id', 'device-active-profile'));
+
+		new Setting(containerEl)
 			.setHeading()
 			.setName('Statusbar interaction')
 			.setDesc('Change the behavior when clicked on the Status bar Icon');

@@ -911,10 +911,13 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 
 	/**
 	 * Gets the currently enabled profile.
+	 * When deviceActiveProfile is true, uses the per-device profile map;
+	 * otherwise falls back to the shared activeProfile.
 	 * @returns The ProfileSetting object. Or undefined if not found.
 	 */
 	getCurrentProfile(): ProfileOptions | undefined {
-		const name = this.vaultSettings.activeProfile?.name;
+		const activeEntry = this.getActiveProfileEntry();
+		const name = activeEntry?.name;
 		if (!name) {
 			return;
 		}
@@ -923,28 +926,27 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 			return;
 		}
 
-		// Use modified at from vault settings
-		if (this.vaultSettings.activeProfile) {
-			let modifiedAt = this.vaultSettings.activeProfile.modifiedAt;
-			if (modifiedAt) {
-				// Convert date string to date
-				modifiedAt = new Date(modifiedAt);
-				profile.modifiedAt = modifiedAt;
-			}
+		// Use modifiedAt from the active entry
+		if (activeEntry?.modifiedAt) {
+			profile.modifiedAt = new Date(activeEntry.modifiedAt);
 		}
 		return profile;
 	}
 
 	/**
-	 * Updates the current profile to passed profile
+	 * Updates the current profile to passed profile.
+	 * When deviceActiveProfile is true, writes only to this device's entry;
+	 * otherwise writes to the shared activeProfile.
 	 * @param profile The profile to update to
 	 */
 	updateCurrentProfile(profile: ProfileOptions | undefined) {
-		if (!profile) {
-			this.vaultSettings.activeProfile = {};
-			return;
+		const entry = profile ? { name: profile.name, modifiedAt: profile.modifiedAt } : {};
+		if (this.vaultSettings.deviceActiveProfile) {
+			const deviceID = this.getDeviceID();
+			this.vaultSettings.deviceProfiles[deviceID] = entry;
+		} else {
+			this.vaultSettings.activeProfile = entry;
 		}
-		this.vaultSettings.activeProfile = { name: profile.name, modifiedAt: profile.modifiedAt };
 	}
 
 	/**
@@ -953,7 +955,34 @@ export default class SettingsProfilesPlugin extends PluginExtended {
 	 * @returns Is enabled profile
 	 */
 	isEnabled(profile: ProfileOptions): boolean {
-		return this.vaultSettings.activeProfile?.name === profile.name;
+		return this.getActiveProfileEntry()?.name === profile.name;
+	}
+
+	/**
+	 * Returns whether per-device active profile tracking is enabled.
+	 */
+	getDeviceActiveProfile(): boolean {
+		return this.vaultSettings.deviceActiveProfile ?? false;
+	}
+
+	/**
+	 * Sets per-device active profile tracking.
+	 * @param value true = each device has its own active profile
+	 */
+	setDeviceActiveProfile(value: boolean) {
+		this.vaultSettings.deviceActiveProfile = value;
+	}
+
+	/**
+	 * Returns the active profile entry for the current context
+	 * (per-device if flag is on, shared otherwise).
+	 */
+	private getActiveProfileEntry(): Partial<ProfileOptions> {
+		if (this.vaultSettings.deviceActiveProfile) {
+			const deviceID = this.getDeviceID();
+			return this.vaultSettings.deviceProfiles?.[deviceID] ?? {};
+		}
+		return this.vaultSettings.activeProfile ?? {};
 	}
 
 	/**
